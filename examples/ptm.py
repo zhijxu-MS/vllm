@@ -14,6 +14,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from termcolor import cprint
 from vllm import LLM, SamplingParams
 import torch
+from vllm.ptm_utils import *
 
 assert Version(ray.__version__) >= Version(
     "2.22.0"), "Ray version must be at least 2.22.0"
@@ -34,14 +35,28 @@ prompts = [
     "The future of AI is",
 ]
 
+
+# info got from ptm
+from vllm import ptm_utils
+torch.distributed.init_process_group()
+ptm_utils.vllm_tp_gpu_group_ = torch.distributed.new_group([i for i in range(8)], backend="nccl")
+ptm_utils.vllm_tp_cpu_group_ = torch.distributed.new_group([i for i in range(8)], backend="gloo")
+
 # Create a class to do batch inference.
 class LLMPredictor:
 
     def __init__(self):
         # Create an LLM.
-        self.llm = LLM(model="meta-llama/Llama-2-7b-chat-hf",
-                       tensor_parallel_size=tensor_parallel_size,
-                       distributed_executor_backend="mp")
+        if is_driver_rank():
+            self.llm = LLM(model="meta-llama/Llama-2-7b-chat-hf",
+                        tensor_parallel_size=tensor_parallel_size,
+                        distributed_executor_backend="mp")
+        else:
+            # act as vllm worker
+            worker = create_worker()
+            worker.start_worker_execution_loop()
+            release_worker_gpu_memory(worker)
+            debug_print()
 
     def __call__(self, batch=None) -> Dict[str, list]:
         # Generate texts from the prompts.
@@ -58,14 +73,12 @@ class LLMPredictor:
             "generated_text": generated_text,
         }
 
-torch.distributed.init_process_group()
-tp_gpu_group = torch.distributed.new_group([i for i in range(8)], backend="nccl")
-tp_cpu_group = torch.distributed.new_group([i for i in range(8)], backend="gloo")
 
-# llm = LLMPredictor()
-# while 1:
-#     outputs = llm()
-#     cprint(outputs, "red", flush=True)
-#     import time
-#     time.sleep(10000)
+llm = LLMPredictor()
+while 1:
+    if is_driver_rank():
+        outputs = llm()
+        cprint(outputs, "red", flush=True)
+        # import time
+        # time.sleep(10000)
 cprint(f"rank is {torch.distributed.get_rank()}, job done\n", "red", flush=True)

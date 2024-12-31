@@ -18,7 +18,8 @@ from vllm.utils import (_run_task_with_lock, cuda_device_count_stateless,
                         cuda_is_initialized, get_distributed_init_method,
                         get_open_port, get_vllm_instance_id, make_async,
                         update_environment_variables)
-
+from vllm import ptm_utils
+from vllm.ptm_utils import *
 logger = init_logger(__name__)
 
 
@@ -77,26 +78,29 @@ class MultiprocessingGPUExecutor(DistributedGPUExecutor):
         # worker in a TP group. These are the workers that will be
         # broadcasted to.
         self.non_driver_workers: List[ProcessWorkerWrapper] = []
-
         if world_size == 1:
             self.worker_monitor = None
         else:
             result_handler = ResultHandler()
             for rank in range(1, world_size):
-                worker = ProcessWorkerWrapper(
-                    result_handler,
-                    partial(
-                        create_worker,
-                        **self._get_create_worker_kwargs(
-                            rank=rank,
-                            local_rank=rank,
-                            distributed_init_method=distributed_init_method,
-                        )))
-                self.workers.append(worker)
-                if rank % tensor_parallel_size == 0:
-                    self.tp_driver_workers.append(worker)
-                else:
-                    self.non_driver_workers.append(worker)
+                info = self._get_create_worker_kwargs(rank=rank, local_rank=rank, distributed_init_method=distributed_init_method)
+                send_info_to_non_driver_rank(obj=info, dst=rank)
+            debug_print()
+            # for rank in range(1, world_size):
+            #     worker = ProcessWorkerWrapper(
+            #         result_handler,
+            #         partial(
+            #             create_worker,
+            #             **self._get_create_worker_kwargs(
+            #                 rank=rank,
+            #                 local_rank=rank,
+            #                 distributed_init_method=distributed_init_method,
+            #             )))
+            #     self.workers.append(worker)
+            #     if rank % tensor_parallel_size == 0:
+            #         self.tp_driver_workers.append(worker)
+            #     else:
+            #         self.non_driver_workers.append(worker)
 
             self.worker_monitor = WorkerMonitor(self.workers, result_handler)
             result_handler.start()
@@ -188,6 +192,10 @@ class MultiprocessingGPUExecutor(DistributedGPUExecutor):
             for worker in self.workers
         ]
 
+        if args or kwargs:
+            info = {"args": args, "kwargs":kwargs}
+            for rank in range(1, torch.distributed.get_world_size(ptm_utils.vllm_tp_gpu_group_)):
+                send_info_to_non_driver_rank(info, dst=rank)
         driver_worker_method = getattr(self.driver_worker, method)
         driver_worker_output = driver_worker_method(*args, **kwargs)
 

@@ -62,5 +62,7 @@ llm = LLMPredictor()
 while 1:
     outputs = llm()
     cprint(outputs, "red", flush=True)
+    import sys
+    sys.exit(0)
     import time
     time.sleep(10000)
