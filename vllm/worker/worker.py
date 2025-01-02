@@ -259,6 +259,7 @@ class Worker(LocalOrDistributedWorkerBase):
 
         This also warms up the model, which may record CUDA graphs.
         """
+        self.initialize_cache_info = {"num_gpu_blocks": num_gpu_blocks, "num_cpu_blocks": num_cpu_blocks}
         raise_if_cache_size_invalid(num_gpu_blocks,
                                     self.cache_config.block_size,
                                     self.cache_config.is_attention_free,

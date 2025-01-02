@@ -51,12 +51,32 @@ class LLMPredictor:
             self.llm = LLM(model="meta-llama/Llama-2-7b-chat-hf",
                         tensor_parallel_size=tensor_parallel_size,
                         distributed_executor_backend="mp")
+            self.worker = self.llm.llm_engine.model_executor.driver_worker
         else:
             # act as vllm worker
-            worker = create_worker()
-            worker.start_worker_execution_loop()
-            release_worker_gpu_memory(worker)
-            debug_print()
+            self.worker = create_worker()
+
+    def run_forward(self, prompts=None):
+        if is_driver_rank():
+            responses = self(prompts)
+            return responses
+        else:
+            self.worker.start_worker_execution_loop()
+
+    def resetup(self, weight_dict=None):
+        # self.worker = create_worker()
+        if weight_dict is not None:
+            assert set(weight_dict.keys()) == set(worker.model_runner.model.state_dict().keys()), "something wrong, model parameters key name mismatched"
+            self.worker.model_runner.model.load_state_dict(weight_dict)
+        self.worker.model_runner.model.to(self.worker.model_runner.model.original_device)
+        self.worker.initialize_cache(**self.worker.initialize_cache_info)
+
+    def release_gpu_memory(self):
+        for cache_engine in self.worker.cache_engine:
+            cache_engine.gpu_cache.clear()
+        self.worker.model_runner.model.original_device = list(self.worker.model_runner.model.parameters())[0].device
+        self.worker.model_runner.model.to("cpu")
+        print(f"rank is {torch.distributed.get_rank()}, mem in used {torch.cuda.memory_allocated()/1024/1024/1024}GB")
 
     def __call__(self, batch=None) -> Dict[str, list]:
         # Generate texts from the prompts.
@@ -76,9 +96,11 @@ class LLMPredictor:
 
 llm = LLMPredictor()
 while 1:
-    if is_driver_rank():
-        outputs = llm()
-        cprint(outputs, "red", flush=True)
+        res = llm.run_forward(prompts)
+        if is_driver_rank():
+            cprint(res, "red", flush=True)
+        # llm.release_gpu_memory()
+        # llm.resetup()
         # import time
         # time.sleep(10000)
 cprint(f"rank is {torch.distributed.get_rank()}, job done\n", "red", flush=True)
