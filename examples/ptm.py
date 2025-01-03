@@ -71,11 +71,18 @@ class LLMPredictor:
         self.worker.model_runner.model.to(self.worker.model_runner.model.original_device)
         self.worker.initialize_cache(**self.worker.initialize_cache_info)
 
-    def release_gpu_memory(self):
+    def release_gpu_cpu_memory(self):
+        # 1. release kv cache
         for cache_engine in self.worker.cache_engine:
             cache_engine.gpu_cache.clear()
+            cache_engine.cpu_cache.clear()
+        # 2. move model weight to CPU
+        # TODO: if weight not needed, then just delete instead of D2H
         self.worker.model_runner.model.original_device = list(self.worker.model_runner.model.parameters())[0].device
         self.worker.model_runner.model.to("cpu")
+        # 3. delete cuda graph, as each cuda graph will need to capture the input tensors which also occupy gpu mem
+        for graph_runner in self.worker.model_runner.graph_runners:
+            graph_runner.clear()
         print(f"rank is {torch.distributed.get_rank()}, mem in used {torch.cuda.memory_allocated()/1024/1024/1024}GB")
 
     def __call__(self, batch=None) -> Dict[str, list]:
@@ -99,8 +106,8 @@ while 1:
         res = llm.run_forward(prompts)
         if is_driver_rank():
             cprint(res, "red", flush=True)
-        # llm.release_gpu_memory()
-        # llm.resetup()
+        llm.release_gpu_cpu_memory()
+        llm.resetup()
         # import time
         # time.sleep(10000)
 cprint(f"rank is {torch.distributed.get_rank()}, job done\n", "red", flush=True)
